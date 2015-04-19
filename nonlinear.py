@@ -1,8 +1,7 @@
 import numpy
 import pandas
 from load import load
-from asymm_gaussian import AsymmGaussian
-from models import ProductModel, SumModel
+from models import ProductModel, SumModel, Model, AsymmGaussian
 from scipy import optimize
 from matplotlib import pyplot as plt
 import sys
@@ -47,11 +46,19 @@ class WeatherEffect(Model):
 
 class SmoothedWeatherEffect(AsymmGaussian):
   def __init__(self, train):
-    train = pandas.rolling_mean(data['weather'], window=2, min_periods=1).values
-    AsymmGaussian.__init__(self, train, lo=False, name='Smoothed weather effect')
+    AsymmGaussian.__init__(self, self.smooth(train), lo=False, name='Smoothed weather effect')
+
+  def smooth(self, x):
+    return pandas.rolling_mean(x['weather'], window=2, min_periods=1).values
 
   def beta0(self):
     return [1.5, 0.5]
+
+  def __call__(self, x, beta, grad=True):
+    if isinstance(x, pandas.DataFrame):
+      x = self.smooth(x)
+
+    return AsymmGaussian.__call__(self, x, beta, grad=grad)
 
 #SmoothedWeatherEffect(train).show([1.5, 1.0])
 
@@ -76,7 +83,7 @@ class DaytypeEffect(Model):
     if grad == False:
       return res
 
-    grad = numpy.zeros((len(data), 3))
+    grad = numpy.zeros((N, 3))
     grad[(x['workingday'] == 1).values, 0] = 1.0
     grad[((x['workingday'] == 0) & (x['holiday'] == 0)).values, 1] = 1.0
     grad[(x['holiday'] == 1).values, 2] = 1.0
@@ -85,8 +92,8 @@ class DaytypeEffect(Model):
 
 
 class RecDaytypeEffect(DaytypeEffect):
-  def __init__(self, data):
-    DaytypeEffect.__init__(self, data)
+  def __init__(self, train):
+    DaytypeEffect.__init__(self, train)
     self.name = 'Recreational'
 
   def beta0(self):
@@ -94,8 +101,8 @@ class RecDaytypeEffect(DaytypeEffect):
 
 
 class CommuteDaytypeEffect(DaytypeEffect):
-  def __init__(self, data):
-    DaytypeEffect.__init__(self, data)
+  def __init__(self, train):
+    DaytypeEffect.__init__(self, train)
     self.name = 'Commute'
 
   def beta0(self):
@@ -133,39 +140,45 @@ class DailyPattern(Model):
 
 
 class RecDailyPattern(DailyPattern):
-  def __init__(self, data):
-    DailyPattern.__init__(self, data)
+  def __init__(self, train):
+    DailyPattern.__init__(self, train)
     self.name = 'Recreational'
 
 
 class CommuteDailyPattern(DailyPattern):
-  def __init__(self, data):
-    DailyPattern.__init__(self, data)
+  def __init__(self, train):
+    DailyPattern.__init__(self, train)
     self.name = 'Commute'
 
 
 class WindspeedEffect(AsymmGaussian):
-  def __init__(self, data):
-    t = data['windspeed'].values
-    AsymmGaussian.__init__(self, t, lo=False, name='Windspeed effect')
+  def __init__(self, train):
+    AsymmGaussian.__init__(self, train, lo=False, name='Windspeed effect')
+
+  def __call__(self, x, beta, grad=False):
+    return AsymmGaussian.__call__(self, x['windspeed'].values, beta, grad=grad)
 
   def beta0(self):
     return [35.0, 10.0]
 
 
 class HumidityEffect(AsymmGaussian):
-  def __init__(self, data):
-    t = data['humidity'].values
-    AsymmGaussian.__init__(self, t, lo=False, name='Humidity effect')
+  def __init__(self, train):
+    AsymmGaussian.__init__(self, train, lo=False, name='Humidity effect')
+
+  def __call__(self, x, beta, grad=False):
+    return AsymmGaussian.__call__(self, x['humidity'].values, beta, grad=grad)
 
   def beta0(self):
     return [60.0, 30.0]
 
 
 class TempEffect(AsymmGaussian):
-  def __init__(self, data):
-    t = data['temp'].values
-    AsymmGaussian.__init__(self, t, name='Temperature effect')
+  def __init__(self, train):
+    AsymmGaussian.__init__(self, train, name='Temperature effect')
+
+  def __call__(self, x, beta, grad=False):
+    return AsymmGaussian.__call__(self, x['temp'].values, beta, grad=grad)
 
   def beta0(self):
     return [31.0, 15.0, 40.0]
@@ -243,8 +256,15 @@ class Quantity(SumModel):
 
 class NonlinearBikeShareModel:
   def __init__(self, train):
+    self.train = train
     self.terms = [Amplitude, Quantity]
     self.model = ProductModel(train, self.terms)
+
+  def bounds(self):
+    return self.model.bounds()
+
+  def beta0(self):
+    return self.model.beta0()
 
   def __call__(self, beta):
     """
@@ -270,7 +290,7 @@ class NonlinearBikeShareModel:
     return self.model.fit(beta, grad=False)
 
   def error(self, count, grad=None):
-    actual = self._train['count'].values
+    actual = self.train['count'].values
     n = len(count)
     evec = numpy.log(1.0 + actual) - numpy.log(1.0 + count)
     e = numpy.sqrt(numpy.dot(evec, evec) / float(n))
@@ -317,7 +337,7 @@ def cv():
       minimizer_kwargs={
         'method':'L-BFGS-B',
         'jac':True,
-        'bounds': nbsm_train.bounds(),
+        'bounds': nbsm.bounds(),
         'options': {'disp': False, 'maxiter': 500}
       },
       disp=True,
@@ -333,225 +353,51 @@ def cv():
     plt.show()
     plt.clf()
 
-cv()
-sys.exit()
 
+def compete():
+  test = load('test.csv')
+  predicted = [] #pandas.DataFrame(columns=test.columns)
+  fit = [] #pandas.DataFrame(columns=test.columns)
+  beta0 = None
 
+  for month, month_test in test.groupby('month'):
+    month_test = month_test.copy()
+    month_train = train[train['month'] <= month]
 
+    nbsm = NonlinearBikeShareModel(month_train)
 
+    if beta0 is None:
+      beta0 = nbsm.beta0()
 
+    res = optimize.basinhopping(
+      nbsm, beta0,
+      minimizer_kwargs={
+        'method':'L-BFGS-B',
+        'jac':True,
+        'bounds': nbsm.bounds(),
+        'options': {'disp': False, 'maxiter': 500}
+      },
+      disp=True,
+      niter=2
+    )
+    print '%s training error:' % month, nbsm(res.x)[0]
 
+    month_test['count'] = nbsm.predict(month_test, res.x)
+    predicted.append(month_test)
+    #fit.append(nbsm.count(res.x))
+    #predicted = pandas.concat([predicted, month_test])
+    beta0 = res.x
 
+  #nbsm = NonlinearBikeShareModel(train)
+  predicted = pandas.concat(predicted)
 
+  plt.plot_date(train['dates'], train['count'], label='train')
+  #plt.plot_date(train['dates'], nbsm.count(beta0), label='train fit')
+  #plt.plot_date(cv_test['dates'], cv_test['count'], label='test')
+  plt.plot_date(predicted['dates'], predicted['count'], label='predicted')
+  plt.legend()
+  plt.show()
+  plt.clf()
 
-
-
-
-
-
-def popularity(data, beta):
-  global days
-  global day0
-
-  res = numpy.zeros(len(data))
-
-  for i, day in enumerate(days):
-    res[(data['dayage'] - day0 == day).values] = beta[i]
-
-  return res
-
-def grad_popularity(coeffs, beta):
-  global days
-  global day0
-
-  grad = numpy.zeros((len(train), len(beta)))
-
-  for i, day in enumerate(days):
-    grad[(train['dayage'] - day0 == day).values, i] = 1.0
-
-  grad = coeffs.reshape(len(train), 1) * grad
-  return grad
-
-
-def count(data, beta):
-  global rec_pattern_slc
-  global commute_pattern_slc
-  global rec_daytype_slc
-  global commute_daytype_slc
-  global weather_slc
-  global pop_slc
-  global temp_slc
-  global mean_count
-
-  cr = daily_pattern(data, beta[rec_pattern_slc])
-  cc = daily_pattern(data, beta[commute_pattern_slc])
-  #print 'daily pattern recreational', cr
-  #print 'daily pattern commuters', cc
-
-  gr = daytype_effect(data, beta[rec_daytype_slc])
-  gc = daytype_effect(data, beta[commute_daytype_slc])
-  #print 'daytype recreational', gr
-  #print 'daytype commuters', gc
-
-  f = weather_effect(data, beta[weather_slc])
-  t = temp_effect(data['temp'].values, beta[temp_slc])
-  #p = popularity(data, beta[pop_slc])
-  p = pop_linear(data, beta[pop_slc])
-  #print 'popularity', p
-  #print 'weather', f
-
-  pft = p * f * t
-  q = gc * cc + gr * cr
-
-  c = pft * q
-
-  return mean_count * c
-
-
-def error(predicted, actual):
-  n = len(predicted)
-  evec = numpy.log(1.0 + actual) - numpy.log(1.0 + predicted)
-  e = numpy.sqrt(numpy.dot(evec, evec) / float(n))
-  return e
-
-
-def func2(beta):
-  global rec_pattern_slc
-  global commute_pattern_slc
-  global rec_daytype_slc
-  global commute_daytype_slc
-  global weather_slc
-  global pop_slc
-  global mean_count
-
-  param = 0
-  n = len(train)
-
-  cr = daily_pattern(train, beta[rec_pattern_slc])
-  cc = daily_pattern(train, beta[commute_pattern_slc])
-  #print 'daily pattern recreational', cr
-  #print 'daily pattern commuters', cc
-
-  gr = daytype_effect(train, beta[rec_daytype_slc])
-  gc = daytype_effect(train, beta[commute_daytype_slc])
-  #print 'daytype recreational', gr
-  #print 'daytype commuters', gc
-
-  f = weather_effect(train, beta[weather_slc])
-  t = temp_effect(train['temp'].values, beta[temp_slc])
-  #p = popularity(train, beta[pop_slc])
-  p = pop_linear(train, beta[pop_slc])
-  #print 'popularity', p
-  #print 'weather', f
-
-  pft = p * f * t
-  q = gc * cc + gr * cr
-
-  c = mean_count * pft * q
-  grad = numpy.zeros((len(train), params_length))
-
-  grad[:,rec_pattern_slc] = grad_pattern(pft * gr, beta[rec_pattern_slc])
-  grad[:,commute_pattern_slc] = grad_pattern(pft * gc, beta[commute_pattern_slc])
-  grad[:,rec_daytype_slc] = grad_daytype(pft * cr, beta[rec_daytype_slc])
-  grad[:,commute_daytype_slc] = grad_daytype(pft * cc, beta[commute_daytype_slc])
-  grad[:,weather_slc] = grad_weather(p * t * q, beta[weather_slc])
-  grad[:,temp_slc] = grad_temp_effect(train['temp'].values, beta[temp_slc], p * f * q)
-  #grad[:,pop_slc] = grad_popularity(f * t * q, beta[pop_slc])
-  grad[:,pop_slc] = grad_pop_linear(f * t * q, beta[pop_slc])
-  grad *= mean_count
-
-  evec = numpy.log(1.0 + train['count'].values) - numpy.log(1.0 + c)
-  e = numpy.sqrt(numpy.dot(evec, evec) / float(n))
-  #print grad.shape
-  #for i in range(24):
-  #  print grad[i]
-  #print c
-  #print train[['hour', 'weather', 'workingday', 'holiday']]
-  #print evec / (1.0 + c)
-  #print (evec / (1.0 + c)).shape
-
-  grad = -numpy.dot(evec / (1.0 + c), grad) / (e * float(n))
-
-  #print 'beta:', beta
-  #print 'error:', e, 'grad:', grad
-  #print 'error:', e
-  if numpy.isnan(e):
-    grad[:] = 0.0
-    return 10.0, grad
-    print 'Got a NaN!!!'
-    print 'popularity extremum:', beta[pop_slc]
-    print c
-    sys.exit()
-  return e, grad
-
-
-
-beta0 = numpy.ones(params_length)
-beta0[rec_pattern_slc] /= 24.0
-beta0[commute_pattern_slc] /= 24.0
-# Following parameters from last basinhopping run.
-beta0[weather_slc] = [1.0, 0.76, 0.7]
-beta0[rec_daytype_slc] = [0.1, 0.71, 0.53] #low on workdays, high on others
-beta0[commute_daytype_slc] = [1.0, 0.0, 0.155] #high on workdays, low on others
-beta0[temp_slc] = [30.0, 15.0, 40.0] #ideal, spread_lo, spread_hi
-#beta0[pop_slc] = [0.03469893, 0.95632921] #linear
-beta0[pop_slc] = 1.0
-
-bounds = [(None, None)] * params_length
-bounds[rec_pattern_slc] = [(0.0, None)] * slen(rec_pattern_slc)
-bounds[commute_pattern_slc] = [(0.0, None)] * slen(commute_pattern_slc)
-bounds[weather_slc] = [(0.0, 1.0)] * slen(weather_slc)
-bounds[rec_daytype_slc] = [(0.0, 1.0)] * slen(rec_daytype_slc)
-bounds[commute_daytype_slc] = [(0.0, 1.0)] * slen(commute_daytype_slc)
-bounds[temp_slc] = [(0.0, None)] * slen(temp_slc)
-bounds[pop_slc] = [(0.0, None)] * slen(pop_slc)
-
-# Constraints
-def rec_pattern_unity(beta):
-  global rec_pattern_slc
-  return 1.0 - sum(beta[rec_pattern_slc])
-
-def commute_pattern_unity(beta):
-  global commute_pattern_slc
-  return 1.0 - sum(beta[commute_pattern_slc])
-
-res = optimize.minimize(func2, beta0, method='L-BFGS-B', jac=True, bounds=bounds, options={'disp': True, 'maxiter': 500})
-eqcons = [rec_pattern_unity, commute_pattern_unity]
-constraints = [
-  {'type': 'eq', 'fun': rec_pattern_unity},
-  {'type': 'eq', 'fun': commute_pattern_unity}
-]
-
-#res = optimize.minimize(func2, beta0, method='SLSQP', jac=True, constraints=constraints, bounds=bounds, tol=1.0e-12, options={'disp': 2, 'maxiter': 1000, 'iprint': 2})
-#res = optimize.basinhopping(func2, beta0, minimizer_kwargs={'method':'L-BFGS-B', 'jac':True, 'bounds':bounds, 'options': {'disp': True, 'maxiter': 500}}, disp=True, niter=20)
-#res = optimize.basinhopping(func2, beta0, minimizer_kwargs={'method':'SLSQP', 'jac':True, 'constraints':constraints, 'bounds':bounds, 'options':{'maxiter':1000, 'iprint':2, 'disp':2}}, disp=True)
-print res
-
-print 'rec pattern:', res.x[rec_pattern_slc]
-print 'commute pattern:', res.x[commute_pattern_slc]
-print 'rec daytype effect:', res.x[rec_daytype_slc]
-print 'commute daytype effect:', res.x[commute_daytype_slc]
-print 'weather effect:', res.x[weather_slc]
-print 'temp effect:'
-print '  ideal T:', res.x[temp_slc][0]
-print '  lower dT:', res.x[temp_slc][1]
-print '  upper dT:', res.x[temp_slc][2]
-print 'popularity:', res.x[pop_slc]
-
-print
-print 'rec pattern sum:', sum(res.x[rec_pattern_slc])
-print 'commute pattern sum:', sum(res.x[commute_pattern_slc])
-
-#print 'Contest error:', error(train['count'].values, count(train, res.x))
-
-plt.plot_date(train['dates'], train['count'])
-plt.plot_date(train['dates'], count(train, res.x))
-
-#plt.plot(res.x[:48])
-plt.show()
-
-plt.clf()
-#plt.plot(range(len(res.x[pop_slc])), res.x[pop_slc], 'o')
-
-plt.scatter(train['temp'], temp_effect(train['temp'].values, res.x[temp_slc]))
-plt.show()
+compete()
+#cv()

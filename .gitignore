@@ -5,3 +5,4 @@
 *.dat
 
 *.pyc
+.ipynb_checkpoints
