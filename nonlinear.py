@@ -4,12 +4,54 @@ from load import load
 from models import ProductModel, SumModel, Model, AsymmGaussian
 from scipy import optimize
 from matplotlib import pyplot as plt
+import datetime
 import sys
 
 train = load('train.csv')
 #train = train[train['month'] == '2011-01']
 train['normcount'] = train['count'] / train['count'].mean()
 mean_count = train['count'].mean()
+
+
+
+class EnumModel(Model):
+  """
+  """
+  def __init__(self, train, column, choices=[], beta0=None, name='Enum model', bounds=None):
+    Model.__init__(self, train)
+    self.choices = choices
+    self.column = column
+    self.name = name
+    self._beta0 = list(beta0)
+    self._bounds = list(bounds)
+
+  def bounds(self):
+    return self._bounds
+
+  def beta0(self):
+    return self._beta0
+
+  def show(self, beta):
+    print self.name
+    for coeff, choice in zip(beta, self.choices):
+      print '  %s: %f' % (str(choice), coeff)
+
+  def __call__(self, x, beta, grad=False):
+    values = x[self.column]
+    f = numpy.zeros(len(x))
+
+    for i, choice in enumerate(self.choices):
+      f[(values == choice).values] = beta[i]
+  
+    if grad == False:
+      return f
+
+    grad = numpy.zeros((len(x), len(beta)))
+
+    for i, choice in enumerate(self.choices):
+      grad[(values == choice).values, i] = 1.0
+
+    return f, grad
 
 
 
@@ -110,8 +152,17 @@ class CommuteDaytypeEffect(DaytypeEffect):
 
 
 class DailyPattern(Model):
+  def __init__(self, train, name='Unnamed'):
+    self.name = name
+    Model.__init__(self, train)
+
   def beta0(self):
-    return 24 * [1.0 / 24.0]
+    h = numpy.linspace(0.0, 23.0, 24)
+    b0 = 0.5 * (1.0 - numpy.cos(numpy.pi * (h - 3.0) / 12.0))
+    # perturb it.
+    delta = 0.1
+    b0 = b0 * (1.0 - delta * numpy.random.random(24))
+    return list(b0)
 
   def bounds(self):
     return 24 * [(0.0, None)]
@@ -174,8 +225,8 @@ class HumidityEffect(AsymmGaussian):
 
 
 class TempEffect(AsymmGaussian):
-  def __init__(self, train):
-    AsymmGaussian.__init__(self, train, name='Temperature effect')
+  def __init__(self, train, name='Temperature effect'):
+    AsymmGaussian.__init__(self, train, name=name)
 
   def __call__(self, x, beta, grad=False):
     return AsymmGaussian.__call__(self, x['temp'].values, beta, grad=grad)
@@ -193,12 +244,13 @@ class LinearPopularity(Model):
     dayage = train['dayage'].values
     self.begin = dayage[0]
     self.end = dayage[-1]
+    self.mean = train['count'].mean()
 
   def beta0(self):
-    return [1.0, 1.0]
+    return 2 * [self.mean]
 
   def bounds(self):
-    return [(0.0, None)] * 2
+    return 2 * [(0.0, None)]
 
   def show(self, beta):
     print 'Linear popularity'
@@ -227,6 +279,89 @@ class LinearPopularity(Model):
     return f, grad
 
 
+class IncreasingPopularity(Model):
+  """
+  Starts somewhere and increases linearly month-to-month.
+  Parameters are specified as semi-positive popularity
+  increases and one starting value.
+
+  The popularity at any given time is a function of the
+  starting value and all previous increases.
+  """
+
+  def __init__(self, train):
+    Model.__init__(self, train)
+    self.bymonth = bymonth = train.groupby('month')
+    self.dayages = bymonth.first()['dayage'].values
+    self.dayages = numpy.concatenate([self.dayages, train.iloc[-1:]['dayage'].values])
+    self.means = bymonth['count'].mean()
+    self.nsegments = len(bymonth)
+    self.nparams = self.nsegments + 1
+
+  def bounds(self):
+    return (self.nsegments + 1) * [(0.0, None)]
+
+  def show(self, beta):
+    print 'Popularity'
+    dates = self.bymonth.first()['dates'].values
+    dates = numpy.concatenate([dates, self.bymonth.last()['dates'][-1:].values])
+    plt.plot_date(dates, pandas.Series(beta).cumsum())
+    plt.show()
+    plt.clf()
+
+  def beta0(self):
+    """
+    Initial guess is a flat curve starting at the mean of
+    the training data.
+    """
+    start = self.means.min()
+    end = self.means.max()
+    dp = (end - start) / float(self.nsegments)
+    return [start] + self.nsegments * [dp]
+
+  def __call__(self, x, beta, grad=True):
+    """
+    In segment i, between days d_i and d_{i+1}, the popularity is
+
+                               beta_{i+1} (d - d_i)
+      p = sum_{n=1}^i beta_n + --------------------
+                                   d_{i+1} - d_i
+
+
+        dp                                  delta_{i+1,j} (d - d_i)
+      ------- = sum_{n=1}^i delta_{n,j} + -------------------------
+      dbeta_j                                   d_{i+1} - d_i
+
+    which equals 1 when d < d_i, and (d-d_i)/(d_{i+1}-d_i) when
+    d >= d_i
+
+    """
+    N = len(x)
+    f = numpy.interp(x['dayage'].values, self.dayages, pandas.Series(beta).cumsum())
+
+    if grad == False:
+      return f
+
+    grad = numpy.zeros((N, self.nparams))
+    days = x['dayage'].values
+
+    for i in xrange(self.nsegments):
+      d_lo = self.dayages[i]
+      d_hi = self.dayages[i + 1]
+      indices = (days >= d_lo) & (days < d_hi)
+
+      for j in xrange(i + 2):
+        if j == i + 1:
+          grad[indices, j] = (days[indices] - d_lo) / (d_hi - d_lo)
+        else:
+          grad[indices, j] = 1.0
+
+    # Finally for predicted values
+    grad[days >= d_hi,:] = 1.0
+
+    return f, grad
+
+
 class Recreational(ProductModel):
   def __init__(self, train):
     #terms = [HumidityEffect, SmoothedWeatherEffect, TempEffect, WindspeedEffect, RecDaytypeEffect, RecDailyPattern]
@@ -244,7 +379,8 @@ class Commuter(ProductModel):
 class Amplitude(ProductModel):
   def __init__(self, train):
     #terms = [LinearPopularity]
-    terms = [HumidityEffect, SmoothedWeatherEffect, LinearPopularity, TempEffect, WindspeedEffect]
+    #terms = [HumidityEffect, WeatherEffect, LinearPopularity, TempEffect, WindspeedEffect]
+    terms = [HumidityEffect, WeatherEffect, IncreasingPopularity, TempEffect, WindspeedEffect]
     ProductModel.__init__(self, train, terms)
 
 
@@ -257,8 +393,35 @@ class Quantity(SumModel):
 class NonlinearBikeShareModel:
   def __init__(self, train):
     self.train = train
-    self.terms = [Amplitude, Quantity]
-    self.model = ProductModel(train, self.terms)
+    #self.model = ProductModel(train, [Amplitude(train), Quantity(train)])
+    #self.model = CommuteDailyPattern(train)
+    self.model = SumModel(train, [
+      ProductModel(train, [
+        WindspeedEffect(train),
+        EnumModel(train, 'weather', choices=range(1, 5), name='Weather', beta0=numpy.ones(4), bounds=4 * [(0.0, 1.0)]),
+        TempEffect(train, name='Workday temp effect'),
+        EnumModel(train, 'workingday', choices=[0, 1], name='Workday', beta0=[0.0, 1.0], bounds=2 * [(0.0, None)]),
+        DailyPattern(train, 'Workday pattern')
+      ]),
+      ProductModel(train, [
+        WindspeedEffect(train),
+        EnumModel(train, 'weather', choices=range(1, 5), name='Weather', beta0=numpy.ones(4), bounds=4 * [(0.0, 1.0)]),
+        TempEffect(train, name='Non-workday temp effect'),
+        EnumModel(train, 'workingday', choices=[0, 1], name='Non-workday', beta0=[1.0, 0.0], bounds=2 * [(0.0, None)]),
+        DailyPattern(train, 'Non-workday pattern')
+      ])
+    ])
+    #self.model = SumModel(train, [
+    #  ProductModel(train, [
+    #    #EnumModel(train, 'dayoweek', choices=range(0, 8), name='Day of week', beta0=numpy.ones(8), bounds=8 * [(0.0, None)]),
+    #    DailyPattern(train, 'Day pattern'),
+    #    IncreasingPopularity(train)
+    #  ])
+    #  #ProductModel(train, [
+    #  #  DailyPattern(train, 'Recreation'),
+    #  #  IncreasingPopularity(train)
+    #  #])
+    #])
 
   def bounds(self):
     return self.model.bounds()
@@ -272,7 +435,7 @@ class NonlinearBikeShareModel:
     optimization.
     """
     f, grad_f = self.model.fit(beta, grad=True)
-    e, grad_e = self.error(f, grad_f)
+    e, grad_e = self.error(self.train['count'].values, f, grad_f)
 
     if numpy.isnan(e):
       grad_e[:] = 0.0
@@ -289,20 +452,27 @@ class NonlinearBikeShareModel:
   def count(self, beta):
     return self.model.fit(beta, grad=False)
 
-  def error(self, count, grad=None):
-    actual = self.train['count'].values
-    n = len(count)
-    evec = numpy.log(1.0 + actual) - numpy.log(1.0 + count)
+  def error(self, actual, predicted, grad=None):
+    n = len(predicted)
+    evec = numpy.log(1.0 + actual) - numpy.log(1.0 + predicted)
     e = numpy.sqrt(numpy.dot(evec, evec) / float(n))
 
     if grad is not None:
-      grad_e = -numpy.dot(evec / (1.0 + count), grad) / (e * float(n))
+      grad_e = -numpy.dot(evec / (1.0 + predicted), grad) / (e * float(n))
       return e, grad_e
 
     return e
 
 
 def explore():
+  """
+  Prediction for beginning of July was bad. Consistently predicted
+  weekend ridership too high. Probably because of July 4th holiday
+  stuff!
+
+  Dec. 7-8 count goes really low.
+  """
+
   nbsm = NonlinearBikeShareModel(train)
   bounds = nbsm.bounds()
   beta0 = nbsm.beta0()
@@ -310,8 +480,8 @@ def explore():
   print 'bounds', len(bounds)
   print 'beta0', len(beta0)
   
-  #res = optimize.minimize(nbsm, beta0, method='L-BFGS-B', jac=True, bounds=bounds, options={'disp': True, 'maxiter': 1000})
-  res = optimize.basinhopping(nbsm, beta0, minimizer_kwargs={'method':'L-BFGS-B', 'jac':True, 'bounds':bounds, 'options': {'disp': True, 'maxiter': 500}}, disp=True, niter=1)
+  res = optimize.minimize(nbsm, beta0, method='L-BFGS-B', jac=True, bounds=bounds, options={'disp': True, 'maxiter': 10000})
+  #res = optimize.basinhopping(nbsm, beta0, minimizer_kwargs={'method':'L-BFGS-B', 'jac':True, 'bounds':bounds, 'options': {'disp': True, 'maxiter': 500}}, disp=True, niter=1)
   
   print res
   nbsm.show(res.x)
@@ -325,79 +495,111 @@ def explore():
 def cv():
   width = 10 * 24 # predict 10 days into future
   tests = 20
-  starts = numpy.random.randint(width, len(train) - width, 20)
-  
-  for start in starts:
+  #starts = numpy.random.randint(width, len(train) - width, 20)
+  step = 7 * 24
+  start = 100 * 24
+  splits = range(start, len(train) - width, step)
+
+  for start in splits:
     cv_train = train.iloc[:start]
     cv_test = train.iloc[start:start + width]
     nbsm = NonlinearBikeShareModel(cv_train)
-    res = optimize.basinhopping(
-      nbsm,
-      nbsm.beta0(),
-      minimizer_kwargs={
-        'method':'L-BFGS-B',
-        'jac':True,
-        'bounds': nbsm.bounds(),
-        'options': {'disp': False, 'maxiter': 500}
-      },
-      disp=True,
-      niter=2
-    )
-    print 'error:', nbsm(res.x)[0]
+    res = optimize.minimize(nbsm, nbsm.beta0(), method='L-BFGS-B', tol=1.0e-7, jac=True, bounds=nbsm.bounds(), options={'disp': True, 'maxiter': 10000})
+    #res = optimize.basinhopping(
+    #  nbsm,
+    #  nbsm.beta0(),
+    #  minimizer_kwargs={
+    #    'method':'L-BFGS-B',
+    #    'jac':True,
+    #    'bounds': nbsm.bounds(),
+    #    'options': {'disp': False, 'maxiter': 500}
+    #  },
+    #  disp=True,
+    #  niter=2
+    #)
+    y_test = cv_test['count'].values
+    error_pred = nbsm.error(y_test, nbsm.predict(cv_test, res.x))
+    print 'training error:', nbsm(res.x)[0], 'prediction error:', error_pred
 
-    plt.plot_date(cv_train['dates'], cv_train['count'], label='train')
-    plt.plot_date(cv_train['dates'], nbsm.count(res.x), label='train fit')
-    plt.plot_date(cv_test['dates'], cv_test['count'], label='test')
-    plt.plot_date(cv_test['dates'], nbsm.predict(cv_test, res.x), label='predicted')
+    nbsm.show(res.x)
+
+    #plt.plot_date(cv_train['dates'], cv_train['count'], label='train')
+    #plt.plot_date(cv_train['dates'], nbsm.count(res.x), label='train fit')
+    plt.plot_date(cv_train['dates'], cv_train['count'] - nbsm.count(res.x), label='train errs')
+
+    #plt.plot_date(cv_test['dates'], cv_test['count'], label='test')
+    #plt.plot_date(cv_test['dates'], nbsm.predict(cv_test, res.x), label='predicted')
+    plt.plot_date(cv_test['dates'], cv_test['count'] - nbsm.predict(cv_test, res.x), label='predicted errs')
+
+    plt.plot_date(cv_train['dates'], 25.0 * cv_train['weather'], label='weather')
+    plt.plot_date(cv_train['dates'], cv_train['humidity'], label='humidity')
+    plt.plot_date(cv_train['dates'], cv_train['windspeed'], label='windspeed')
+    plt.plot_date(cv_train['dates'], 2.0 * cv_train['temp'], label='temp')
+    plt.plot_date(cv_train['dates'], 2.0 * cv_train['atemp'], label='atemp')
+    #plt.plot_date(cv_train['dates'], 200.0 * cv_train['holiday'], label='holiday')
+
     plt.legend()
     plt.show()
     plt.clf()
 
 
-def compete():
+def compete(submit=False, history=10):
   test = load('test.csv')
-  predicted = [] #pandas.DataFrame(columns=test.columns)
-  fit = [] #pandas.DataFrame(columns=test.columns)
+  predicted = []
   beta0 = None
 
-  for month, month_test in test.groupby('month'):
+  i = 0
+  for month, month_test in test.groupby('monthage'):
+    i += 1
+    #if i != 20:
+    #  continue
+
     month_test = month_test.copy()
-    month_train = train[train['month'] <= month]
+    # Use only last history months.
+    #month_train = train[(train['monthage'] <= month) & (train['monthage'] > month - history)]
+    month_train = train[train['monthage'] <= month]
 
     nbsm = NonlinearBikeShareModel(month_train)
 
-    if beta0 is None:
-      beta0 = nbsm.beta0()
+    #if beta0 is None:
+    #  beta0 = nbsm.beta0()
 
-    res = optimize.basinhopping(
-      nbsm, beta0,
-      minimizer_kwargs={
-        'method':'L-BFGS-B',
-        'jac':True,
-        'bounds': nbsm.bounds(),
-        'options': {'disp': False, 'maxiter': 500}
-      },
-      disp=True,
-      niter=2
-    )
+    res = optimize.minimize(nbsm, nbsm.beta0(), method='L-BFGS-B', jac=True, bounds=nbsm.bounds(), options={'disp': False, 'maxiter': 10000})
+    #res = optimize.basinhopping(
+    #  nbsm,
+    #  nbsm.beta0(),
+    #  minimizer_kwargs={
+    #    'method':'L-BFGS-B',
+    #    'jac':True,
+    #    'bounds': nbsm.bounds(),
+    #    'options': {'disp': False, 'maxiter': 500}
+    #  },
+    #  disp=True,
+    #  niter=10
+    #)
     print '%s training error:' % month, nbsm(res.x)[0]
 
     month_test['count'] = nbsm.predict(month_test, res.x)
+    #nbsm.show(res.x)
     predicted.append(month_test)
-    #fit.append(nbsm.count(res.x))
-    #predicted = pandas.concat([predicted, month_test])
-    beta0 = res.x
+    #beta0 = res.x
 
-  #nbsm = NonlinearBikeShareModel(train)
   predicted = pandas.concat(predicted)
 
   plt.plot_date(train['dates'], train['count'], label='train')
-  #plt.plot_date(train['dates'], nbsm.count(beta0), label='train fit')
-  #plt.plot_date(cv_test['dates'], cv_test['count'], label='test')
   plt.plot_date(predicted['dates'], predicted['count'], label='predicted')
   plt.legend()
   plt.show()
   plt.clf()
 
-compete()
-#cv()
+  if submit:
+    submission = pandas.DataFrame()
+    submission['datetime'] = test['dates']
+    submission['count'] = predicted['count'] #.round().astype('int')
+    submission.to_csv('submission-' + datetime.datetime.now().strftime('%Y-%m-%d-%H-%M') + '.csv', index=False)
+  #print res
+
+
+#explore()
+cv()
+#compete(submit=False)

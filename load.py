@@ -15,7 +15,13 @@ def load(filename):
   data['dates'] = dates
   data['hour'] = hours
   data['day'] = days
+
+  # 0-7 inclusive. Includes special holiday day.
+  data['dayoweek'] = [date.weekday() for date in dates]
+  data.loc[data['holiday'] == 1, 'dayoweek'] = 7
+
   data['month'] = months
+  data['monthage'] = [(12 * date.year + date.month - 1) for date in dates]
   data['monthday'] = [date.day for date in dates]
   data['dayage'] = [(date - epoch).days for date in dates]
   data['hourage'] = [24*(date - epoch).days + date.hour for date in dates]

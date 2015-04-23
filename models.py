@@ -14,10 +14,11 @@ class MultiModel(Model):
     """
     Arguments:
       train {*} - The training data for the model.
-      terms {list} - A list of Model classes.
+      terms {list} - A list of models.
     """
     Model.__init__(self, train)
-    self.terms = [term(train) for term in terms]
+    self.terms = terms
+    #self.terms = [term(train) for term in terms]
     self._beta0 = []
     self._bounds = []
     self.slices = []
@@ -128,9 +129,9 @@ class AsymmGaussian(Model):
       print '  right width:  %.1f' % width
     print '  params:', beta
 
-    plt.scatter(self._train, self(beta, grad=False))
-    plt.show()
-    plt.clf()
+    #plt.scatter(self._train, self(self._train, beta, grad=False))
+    #plt.show()
+    #plt.clf()
 
   def __call__(self, t, beta, grad=True):
     f = numpy.ones(len(t))

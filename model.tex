@@ -240,6 +240,52 @@ And the gradient is
 \]
 
 
+\subsection*{Generic model}
+
+Let us assume first a popularity trend. This is the number of people
+that know about the service at any given time (let's further assume
+a daily granularity for the popularity trend; that is, the popularity
+is constant over the course of a day). The popularity trend must
+increase or stay the same from day to day. This trend is not given by
+the training data; only the ridership at each hour of each day is
+given. So our model starts out depending on only the date:
+\[
+c(\bx) = c(d)
+\]
+where $d$ is the date and
+\[
+c(d + \Delta d) \geq c(d)
+\]
+where $\Delta d > 0$.
+
+Next, assume that the hour of day is a strong indicator of ridership
+for a given popularity.
+
+\[
+c \approx f(d, h, T, w, m, q)
+\]
+
+First, assume that the baseline ridership only increases from day to
+day; i.e.
+\[
+\partial_d f \geq 0
+\]
+Also assume that the above is ``small'', that is, baseline ridership
+for a given time of day does not change much day to day (assuming all
+other inputs are constant).
+
+The day type, $q$, is not a continuous variable, therefore, for
+maximum generality, we treat it
+as an index.
+\[
+c \approx \sum_q f_q(d, h, T, w, m)
+\]
+There is likely a relationship between certain day types (e.g. a
+Tuesday is probably similar to a Wednesday in the same week, all else
+constant).
+
+
+
 \subsection*{Full model}
 
 The model with the fewest parameters gives identical weather and
