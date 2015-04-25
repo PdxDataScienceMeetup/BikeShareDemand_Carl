@@ -8,101 +8,82 @@
 
 \begin{document}
 
-Our predictor function for the number of riders at a given hour
-(described by input parameters $\bx$) is
+\subsection*{Generic model}
+
+The number of people that are aware of the service at time $t$ is $N(t)$.
+This number always increases, $N(t + \Delta t) \geq N(t)$.
+
+At every time, for each person, there is some probability that they
+will be riding. This depends on day of week, hour of day, temperature,
+etc. The total count for a given time is therefore approximated by:
 \[
-c(\bx, \bbeta)
+c(t, \bx) = \sum_i^{N(t)} p_i(t, \bx)
 \]
-where $\bbeta$ is our set of model parameters.
+where $p_i(t, \bx) \in [0, 1]$ is the probability that rider $i$ is on
+a bike at time $t$ given the conditions $\bx$ (which includes
+temperature and all that).
 
-Our first model assumption separates commuting riders from
-recreational riders; obviously, the total count is the
-sum of their distinct counts:
+There is an ambiguity between $p_i$ and $N$. Decreasing all $p_i$
+while increasing $N$ may leave the count unchanged. The simplest model
+will minimize $N$ given the constraint $p_i \in [0, 1]$. This may add
+complexity to the cost function.
+
+The problem is, of course, we do not know the distributions
+$p_i(t, \bx)$.
+
+Simplify the model by grouping riders into $M$ classes $C_i$, $i = 1
+\ldots M$; members of a
+class have very similar probability distributions so that we write
+\begin{align*}
+c(t, \bx) &= \sum_i^M \sum_{j \in C_i} p_{j}(t, \bx) \\
+          &= \sum_i^M N_i(t) \bar{p}_i(t, \bx)
+\end{align*}
+where we have introduced the $M$ class-size parameters $N_i(t) \geq 0$,
+which represent
+the number of riders in a certain class, and the class rider distribution
+is
 \[
-c(\bx, \bbeta) = c_c(\bx, \bbeta) + c_r(\bx, \bbeta)
+\bar{p}_i(t, \bx) = \frac{1}{N_i(t)} \sum_{j \in C_i} p_{j}(t, \bx)
 \]
-where $c_c$ and $c_r$ are commuting and recreating counts,
-respectively.
+where $\bar{p}_i(t, \bx) \in [0, 1]$.
 
-We will assume that, given perfect weather and unchanging program
-popularity, the counts will vary hour-to-hour on a daily cycle.
+The class sizes satisfy
 \[
-c(\bx, \bbeta) = \alpha_c(\bx, \bbeta) \hat{c}_c(h) +
-\alpha_r(\bx, \bbeta) \hat{c}_r(h)
+\sum_i N_i(t) = N(t)
 \]
-where $h$ is the hour of day (1-24), obtained from $\bx$.
+Since riders are free to switch classes, there is no monotonic
+constraint on each $N_i(t)$; i.e. they are free to fluctuate.
 
+The goal is to deduce the size and probability distribution for each
+class.
+
+In the training dataset, we know the total count
+$c(t)$. The error is
 \[
-\hat{c}(h) =
-\frac{
-  \beta_{\hat{c},h}
-}
-{
-  \sum_{i=1}^{24} \beta_{\hat{c},i}
-}
+e(t) = c(t) - \sum_i^{N(t)} p_i(t, \bx)
 \]
-
-The gradient is
-\begin{align}
-\partial_{\beta_{\hat{c},j}} \hat{c}(h) &=
-\frac{
-  \delta_{h,j}
-}{
-  \sum_{i=1}^{24} \beta_{\hat{c},i}
-} -
-\frac{
-  \beta_{\hat{c},h}
-}{
-  (\sum_{i=1}^{24} \beta_{\hat{c},i})^2
-} \\
-&=
-\frac{
-  \delta_{h,j} \sum_{i=1}^{24} \beta_{\hat{c},i} -
-  \beta_{\hat{c},h}
-}{
-  (\sum_{i=1}^{24} \beta_{\hat{c},i})^2
-}
-\end{align}
-
-
-
-%\begin{align}
-%\partial_{\beta_{\hat{c},j}} \hat{c}(h) &=
-%\sum_{i=1}^{23} \delta_{i,j} \delta_{h,i}
-%- \sum_{i=1}^{23} \delta_{i,j} \delta_{h,24} \\
-%&= \delta_{h,j} - \delta_{h,24}
-%\end{align}
-and since $j \neq 24$
 
 \subsection*{Weather effect}
 
-Introduce the weather effect function, $f(W, \bbeta) \in [0, 1]$, where the
+Introduce the weather effect function, $f_W(W, \bbeta_W) \in [0, 1]$, where the
 weather score, $W$, given in $\bx$, can take on only 4 values
 (integers 1-4).  The weather score introduces a multiplicative effect under
 the assumption that bad weather will reduce ridership by a certain
-percentage of the fair-weather number. For simplicity (at first),
-the weather score will affect both commuters and recreators equally.
+percentage of the fair-weather number.
 \[
-c(\bx, \bbeta) = f(W, \bbeta_f) \left( \alpha^{\prime}_c(\bx, \bbeta) \hat{c}_c(h) +
-\alpha^{\prime}_r(\bx, \bbeta) \hat{c}_r(h) \right)
+f_W(W, \bbeta_W) = \delta_{W,1} + \sum_{i=2}^4 \beta_{W,i} \delta_{i,W}
 \]
-
-where $\beta_n \in [0, 1]$.
-Removing amplitude from the weather effect gives
-\[
-f(W, \bbeta_f) = \delta_{W,1} + \beta_{f,W-1}
-\]
-
-$W=1$ represents ``ideal''
+where $W=1$ represents ``ideal''
 weather (no rain, storms, etc).
 
 The gradient is
 \[
-\partial_{\beta_{f,i}} f = \delta_{W-1,i}
+\partial_{\beta_{W,i}} f_W = \delta_{W,i}
 \]
+for $W > 1$.
 
 
-A smarter approach might smooth (average) $W$ 
+We might smooth (average) $W$ 
 over several hours, under the assumption that someone caught in a
 flash storm on their bike may keep riding or take cover until the
 storm passes.
@@ -110,16 +91,13 @@ storm passes.
 If $W$ is smoothed to $\bar{W}$, a continuous function of $\bar{W}$
 must be approximated, for example with polynomials,
 \[
-f(W, \bbeta) \approx \sum_{n=1}^N \beta_n \bar{W}^{n-1}
+f_W(W, \bbeta_W) \approx \sum_{n=1}^N \beta_{W,n} \bar{W}^{n-1}
 \]
 
-In either case, we label the number of parameters needed by the
-approximated weather effect by $N$ ($N=4$ in the simple delta-function
-approximation).
 
 \subsection*{Day type}
 
-We also introduce a {\it day-type} effect, $g(D, \bbeta_g)$, which
+Also introduce a {\it day-type} effect, $f_D(D, \bbeta_D)$, which
 considers differences in ridership patterns for working days,
 holidays, weekends, etc. We assign an integer value $D \in [0, M]$ for each of these
 day types.
@@ -229,7 +207,8 @@ and
 
 \subsection*{Popularity}
 
-Finally, a {\it popularity} amplitude $p(t, \bbeta)$ determines the amplitude of our
+A {\it popularity} amplitude $p(t, \bbeta)$ determines the amplitude
+of the
 count predictor function, where $t$ is the date (day).
 \[
 p(t, \bbeta_p) = \beta_{p,t}
@@ -240,214 +219,22 @@ And the gradient is
 \]
 
 
-\subsection*{Generic model}
-
-Let us assume first a popularity trend. This is the number of people
-that know about the service at any given time (let's further assume
-a daily granularity for the popularity trend; that is, the popularity
-is constant over the course of a day). The popularity trend must
-increase or stay the same from day to day. This trend is not given by
-the training data; only the ridership at each hour of each day is
-given. So our model starts out depending on only the date:
-\[
-c(\bx) = c(d)
-\]
-where $d$ is the date and
-\[
-c(d + \Delta d) \geq c(d)
-\]
-where $\Delta d > 0$.
-
-Next, assume that the hour of day is a strong indicator of ridership
-for a given popularity.
-
-\[
-c \approx f(d, h, T, w, m, q)
-\]
-
-First, assume that the baseline ridership only increases from day to
-day; i.e.
-\[
-\partial_d f \geq 0
-\]
-Also assume that the above is ``small'', that is, baseline ridership
-for a given time of day does not change much day to day (assuming all
-other inputs are constant).
-
-The day type, $q$, is not a continuous variable, therefore, for
-maximum generality, we treat it
-as an index.
-\[
-c \approx \sum_q f_q(d, h, T, w, m)
-\]
-There is likely a relationship between certain day types (e.g. a
-Tuesday is probably similar to a Wednesday in the same week, all else
-constant).
 
 
-
-\subsection*{Full model}
-
-The model with the fewest parameters gives identical weather and
-day-type effects to both recreational and commuting riders
-\[
-c(\bx, \bbeta) = p(t, \bbeta_p) f(W, \bbeta_f)
-\big( g_c(D, \bbeta_{g_c}) \hat{c}_c(h, \bbeta_{c_c}) + g_r(D,
-\bbeta_{g_r}) \hat{c}_r(h, \bbeta_{c_r}) \big)
-\]
-
-The above model results in $P$ parameters,
-\[
-P = N + 2 M
-\]
-
-
-The important inputs are
-\begin{enumerate}
-  \item Rider type (2 values)
-  \item Hour of day (24 values)
-  \item Weather (3 or $N$ values)
-  \item Day type ($M$ values)
-\end{enumerate}
-so the total size of the input space (in the simple weather case) is
-\[
-2 \times 24 \times N \times M = 48 N M
-\]
-
-In the simple case $N=3$ (3 non-normal weather values), $M=2$
-(weekend, holiday, working day), the input space has dimension
-288.
 
 \section*{Training}
 
 We will brute force the minimization of
 \[
-e = \sqrt{\frac{1}{n} \sum_i^n (\log (1 + c_i) - \log(1 + c(\bx_i,
+e = \sqrt{\frac{1}{n} \sum_i^n w_i (\log (1 + c_i) - \log(1 + c(\bx_i,
 \bbeta)))^2}
 \]
 
 The analytic gradient of the cost function may be useful.
 \[
-\nabla_{\bbeta} e = - \frac{1}{e n} \sum \frac{e_i}{1 + c(\bx_i,
+\nabla_{\bbeta} e = - \frac{1}{e n} \sum \frac{w_i e_i}{1 + c(\bx_i,
 \bbeta)} \nabla_{\bbeta} c(\bx_i, \bbeta)
 \]
-We can split up our gradient by effect.
-\[
-\nabla_{\bbeta} =
-\nabla_{\bbeta_{\hat{c}_c}} +
-\nabla_{\bbeta_{\hat{c}_r}} +
-\nabla_{\bbeta_{g_c}} +
-\nabla_{\bbeta_{g_r}} +
-\nabla_{\bbeta_{p}} +
-\nabla_{\bbeta_{f}}
-\]
 
-\begin{align}
-\nabla_{\bbeta_{\hat{c}_r}} c &=
-p(t, \bbeta_p) f(W, \bbeta_f) g_r(D, \bbeta_{g_r}) \bbeta_{\hat{c}_r}
-\\
-\nabla_{\bbeta_{\hat{c}_c}} c &=
-p f g_c \bbeta_{\hat{c}_c}
-\\
-\nabla_{\bbeta_{g_c}} c &=
-p f g_c \bbeta_{g_c}
-\end{align}
-
-\section*{Predictions}
-
-We would like to predict $c(\bx_n)$ given $c(\bx_1)$ through
-$c(\bx_{n-1})$. We assume that $p(t)$ does not change much over the
-course of several days.
-
-Because the $p(t)$ and $c_{(c,r)}(h)$ terms in our model do not
-contain parameters,
-
-
-We assume the general form:
-\[
-c(\bx, \bbeta) = \alpha_1(W, T, D) \sum_n f_n(t) + \alpha_2(W, T, D) f_2(t)
-\]
-where $t$ is in hours, $W$ is the weather score (1-4), $T$ is the
-temperature, $D$ is the type of day (holiday, regular working day, or
-weekend day), $f_1$ is the curve for commuting riders, and $f_2$
-is the curve for recreational riders. We assume (given the obvious
-daily shape of the data) that $f_n(t + 24) \approx f_n(t)$.
-
-Fluctuations in the ``normal'' shapes $f_n$ are due to environmental
-factors and a little bit of randomness (like getting sick and staying
-home from work).
-
-We would like to predict $c(t)$ given $c(t^{\prime} < t)$.
-
-The training data contains known values for $c(t)$ for ranges of $t$
-at the first 2/3 of every month.
-
-
-We need a model for the shape function coefficients. Parameterize with
-$\beta$.
-\[
-\alpha_n(\bx, \bbeta) \approx \alpha_n(\bx, \bbeta_0) + \bbeta \cdot \nabla
-\alpha_n(\bx, \bbeta) |_{\bbeta = \bbeta_0}
-\]
-
-\[
-\alpha_n(\bx, \bbeta) = \prod_i (\beta_{i,1} + \beta_{i,2} \Xi(\bx))
-\]
-
-Consider the difference,
-\[
-c(t) - c(t - 24) \approx
-(\alpha_1(\bx(t)) - \alpha_1(\bx(t - 24))) f_1(t - 24) +
-(\alpha_2(\bx(t)) - \alpha_2(\bx(t - 24))) f_2(t - 24)
-\]
-
-\section*{Model}
-
-A data sample comes at the start of every hour, $i$. A known rider
-count is $c_i$ while a predicted one is $\tilde{c}_i$.
-
-Each unknown rider count is a function of parameters $\beta_i$, given the
-training dataset.
-
-\[
-\tilde{c}_i = \tilde{c}(\bx_i, \bbeta)
-\]
-
-Assume the form
-
-\[
-\tilde{c}_i = \frac{\sum_{j=1}^{i-1} w_{i,j} c_j}{\sum_{j=1}^{i-1}
-w_{i,j}}
-\]
-
-
-Let $h(i)$ be the hour-of-day for sample $i$, $W(i)$ return 1 if
-sample $i$ was taken during a workday and 0 otherwise. We also assume that
-
-\[
-w_{i,j} \propto \delta_{h(i),h(j)} (\alpha \delta_{W(i),W(j)} + \gamma (1 - \delta_{W(i),W(j)}))
-\]
-
-For known counts, we measure the accuracy of a prediction for that
-count (given preceding historical data) as
-
-\[
-e_i = \log(1 + c_i) - \log(1 + \tilde{c}_i)
-\]
-
-and the total error is
-
-\[
-e = \sqrt{\frac{1}{N} \sum_{i=1}^N e_i^2}
-\]
-
-
-\section*{Correlation study}
-
-Measure the correlations in the data by
-
-\[
-C = \sum_i c_i - c_{i+j}
-\]
 
 \end{document}

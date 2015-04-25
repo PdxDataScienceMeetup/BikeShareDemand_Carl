@@ -11,20 +11,6 @@ import pandas
 import numpy
 from scipy.optimize import fmin
 
-def make_X(data, zero_hour, max_hour):
-  X = pandas.DataFrame()
-  X['weather'] = data['weather'] / 4.0
-  X['hour'] = 10.0 * data['hour'] / 23.0
-  X['hourage'] = data['hourage'] - zero_hour
-  X['hourage'] *= 10.0 / max_hour
-  X['workingday'] = 1.0 * data['workingday']
-  X['holiday'] = 1.0 * data['holiday']
-  X['temp'] = 1.0 * data['temp'] / data['temp'].max()
-  X['humidity'] = data['humidity'] / 100.0
-  X['windspeed'] = data['windspeed'] / data['windspeed'].max()
-
-  return X
-
 
 
 #for h in xrange(24):
@@ -97,9 +83,18 @@ class Features:
     return X
 
 
-def cv():
-  data = load('train.csv')
+def opt_svr():
+  """
+  Optimize weights in SVM kernel. A larger variance in a feature value
+  increases its "importance" or "weight" in support vector regression
+  with a Gaussian kernel. Optimize these weights for the best predictions.
 
+  This takes a while and has not converged for me. However, it wasn't a total
+  failure. I got some useful weights by printing them at each step of the opt,
+  which improved things somewhat.
+  """
+
+  data = load('train.csv')
 
   def f(x):
     scores = []
@@ -134,22 +129,27 @@ def cv():
     print ''
     return avg_score
 
-  # epsilon, feature-weights...
+  # epsilon, feature-weights... results from a previous optimization. Negative
+  # values should be identical to positive ??.
   x0 = [0.1, 1.40158166, 9.34358376, 2.03396555, 1.36130647, 1.0, 1.0, 1.0, 1.0]
   x0 = [0.02, 1.40148374, 9.34562319, 2.16667722, 1.43079, -2.87906537, -1.13396606, -1.08639336, 0.18894128]
   res = fmin(f, x0)
   print res
 
 
-#cv()
-#sys.exit()
 
-def skl():
+def grid_search():
+  """
+  Scikit learn grid search over SVR hyper-parameters.
+
+  This takes a long time.
+  """
+
   data = load('train.csv')
   test = load('test.csv')
 
   grid = [
-    {'C': [1, 10, 100], 'epsilon': [0.1, 0.2, 0.1]}
+    {'C': [1, 10, 100], 'epsilon': [0.05, 0.1, 0.2]}
   ]
 
   for train, test in cv_split(data, start=100, step=100, predict=10):
@@ -190,31 +190,6 @@ def skl():
     print '  sub-score:', scores[-1]
 
 
-skl()
-sys.exit()
-
-
-def cv_old():
-  X = make_X(train)
-  y = train['count'] / train['count'].mean()
-  print X
-  print y
-  
-  # split into a training and testing set
-  X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25)
-  print 'x test:', X_test.shape
-  print 'x train:', X_train.shape
-  print 'y test:', y_test.shape
-  print 'y train:', y_train.shape
-
-  svr = svm.SVR(kernel='rbf', degree=3, verbose=True, tol=1.0e-6, shrinking=False, epsilon=0.1)
-  svr.fit(X_train, y_train)
-  y_pred = svr.predict(X_test)
-
-  plt.scatter(X_test['hourage'], y_test, c='b')
-  plt.scatter(X_test['hourage'], y_pred, c='g')
-  plt.show()
-
 
 
 def compete(submit=False):
@@ -228,18 +203,6 @@ def compete(submit=False):
   # terminated opt
   #weights = [ 1.40158166  9.34358376  2.03396555  1.36130647 -2.9131261  -1.11267807  -1.09537982  0.29371516]
 
-  zero_hour = train.iloc[0]['hourage']
-  max_hour = test.iloc[-1]['hourage']
-
-  #X = make_X(train, zero_hour, max_hour)
-  #y = train['count'] / train['count'].mean()
-  #X_test = make_X(test, zero_hour, max_hour)
-  #Xdf = features(train)
-  #X = scale(Xdf)
-  #y = scale(numpy.asarray(train['count'].values, dtype='float'))
-  #Xdf_test = features(test)
-  #X_test = scale(Xdf_test)
-
   features = Features(weights=weights)
   X = features.fit_transform(train)
   X_test = features.transform(test)
@@ -247,21 +210,12 @@ def compete(submit=False):
   yscaler = StandardScaler()
   y = yscaler.fit_transform(numpy.asarray(train['count'].values, dtype='float'))
 
-  #pca = PCA() #n_components=None)
-  #print X.shape, y.shape
-  #X = pca.fit_transform(X, y)
-
   svr = svm.SVR(kernel='rbf', degree=3, verbose=True, tol=1.0e-6, shrinking=False, epsilon=0.05)
-  #svr = svm.SVR(kernel='rbf', degree=3, verbose=True, tol=1.0e-6, shrinking=False, epsilon=0.1)
   svr.fit(X, y)
   y_pred = svr.predict(X_test)
 
   print 'score:', svr.score(X, y)
 
-  # Zero lowballers
-  #y_pred[y_pred < 0.0] = 0.0
-  #y_pred *= train['count'].mean()
-  
   plt.plot_date(train['dates'], train['count'], c='b')
   plt.plot_date(test['dates'], yscaler.inverse_transform(y_pred), c='g')
   plt.show()
